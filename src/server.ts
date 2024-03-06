@@ -6,42 +6,51 @@ import UserService from "@/services/user.service";
 import bodyParser from "body-parser";
 import userModel from "@/models/User";
 import mongoose from "mongoose";
+import { Strategy as GoogleStrategy } from "passport-google-oauth20";
+import passport = require("passport");
+const {
+  PORT = 3000,
+  GOOGLE_OAUTH_REDIRECT_URL,
+  GOOGLE_CLIENT_SECRET,
+  GOOGLE_CLIENT_ID,
+} = process.env;
+
+const app = express();
+
+passport.use(
+  new GoogleStrategy(
+    {
+      clientID: GOOGLE_CLIENT_ID!,
+      clientSecret: GOOGLE_CLIENT_SECRET!,
+      callbackURL: GOOGLE_OAUTH_REDIRECT_URL,
+      passReqToCallback: true,
+    },
+    (req, accessToken, reFreshToken, profile, done) => {
+      console.log("running");
+      console.log("accessToken", accessToken);
+    }
+  )
+);
+
+app.use(passport.initialize());
 
 mongoose.connect(process.env.MONGO_URI!).then(() => {
   console.log("Connect DB Success");
 
   const userService = new UserService();
 
-  const app = express();
   app.use(bodyParser.json());
   app.use(bodyParser.urlencoded({ extended: true }));
-  const {
-    PORT = 3000,
-    GOOGLE_OAUTH_REDIRECT_URL,
-    GOOGLE_CLIENT_SECRET,
-    GOOGLE_CLIENT_ID,
-  } = process.env;
 
-  app.get("/login/google", (req, res) => {
-    const ROOT_URL = "https://accounts.google.com/o/oauth2/v2/auth";
-    const options = {
-      response_type: "code",
-
-      redirect_uri: GOOGLE_OAUTH_REDIRECT_URL!,
-      client_id: GOOGLE_CLIENT_ID!,
-      access_type: "offline",
-      prompt: "consent",
-      scope: [
-        "https://www.googleapis.com/auth/userinfo.profile",
-        "https://www.googleapis.com/auth/userinfo.email",
-      ].join(" "),
-    };
-
-    const qs = new URLSearchParams(options);
-
-    const url = `${ROOT_URL}?${qs.toString()}`;
-    res.send(url);
-  });
+  app.get(
+    "/login/google",
+    passport.authenticate("google", {
+      scope: ["email", "profile"],
+    }),
+    (req, res) => {
+      res.json("ok");
+    }
+  );
 
   app.get("/api/sessions/oauth/google", async (req, res) => {
     try {
