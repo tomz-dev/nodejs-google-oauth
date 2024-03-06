@@ -2,21 +2,43 @@ import "module-alias/register";
 import "dotenv/config";
 import express from "express";
 import axios from "axios";
-import UserService from "@/services/user.service";
 import bodyParser from "body-parser";
 import userModel from "@/models/User";
 import mongoose from "mongoose";
 import { Strategy as GoogleStrategy } from "passport-google-oauth20";
-import passport = require("passport");
+import passport from "passport";
+import jwt from "jsonwebtoken";
+import { Strategy as JWTStrategy, ExtractJwt } from "passport-jwt";
+import cookieParser from "cookie-parser";
+
 const {
   PORT = 3000,
   GOOGLE_OAUTH_REDIRECT_URL,
   GOOGLE_CLIENT_SECRET,
   GOOGLE_CLIENT_ID,
+  TOKEN_SECRET_KEY,
 } = process.env;
 
 const app = express();
 
+//# middleware
+app.use(passport.initialize());
+app.use(cookieParser());
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+
+//# extract token from cookie
+const extractCookie = (req: express.Request) => {
+  let token: string = "";
+
+  if (req.cookies && req.cookies["token"]) {
+    token = req.cookies["token"];
+  }
+
+  return token;
+};
+
+//# set up passport with google
 passport.use(
   new GoogleStrategy(
     {
@@ -25,55 +47,104 @@ passport.use(
       callbackURL: GOOGLE_OAUTH_REDIRECT_URL,
       passReqToCallback: true,
     },
-    (req, accessToken, reFreshToken, profile, done) => {
-      console.log("running");
-      console.log("accessToken", accessToken);
+    async (req, accessToken, reFreshToken, profile, done) => {
+      const subProfile = profile._json;
+      const email = subProfile["email"];
+
+      if (!email) {
+        return done("dont exist emai", false);
+      }
+
+      const user = await userModel.findOne({ email });
+
+      if (user) {
+        done(null, user);
+      } else {
+        if (!profile!.emails![0].verified) {
+          return done("not verified", false);
+        }
+        //create new user
+        const user = await userModel.create({
+          ...subProfile,
+          googleId: profile.id,
+        });
+        done(null, user);
+      }
     }
   )
 );
 
-app.use(passport.initialize());
+//# set up passport with JWT
+passport.use(
+  new JWTStrategy(
+    {
+      jwtFromRequest: extractCookie,
+      secretOrKey: TOKEN_SECRET_KEY!,
+    },
+    async (jwt_payload, done) => {
+      const currentUser = await userModel.findById(jwt_payload._id);
+      console.log("🚀 ~ currentUser:", currentUser);
 
+      if (!currentUser) {
+        return done("Unauthorized", false);
+      }
+
+      done(null, currentUser);
+    }
+  )
+);
+
+//# start connect db
 mongoose.connect(process.env.MONGO_URI!).then(() => {
   console.log("Connect DB Success");
 
-  const userService = new UserService();
-
-  app.use(bodyParser.json());
-  app.use(bodyParser.urlencoded({ extended: true }));
-
+  //# routes
   app.get(
     "/login/google",
     passport.authenticate("google", {
       scope: ["email", "profile"],
-    }),
-    (req, res) => {
-      res.json("ok");
+    })
+  );
+
+  app.get(
+    "/api/sessions/oauth/google",
+    passport.authenticate("google", { session: false }),
+    async (req, res) => {
+      const user: any = req.user;
+      if (user) {
+        const expiresIn = 60 * 60 * 24;
+        const token = jwt.sign(
+          {
+            email: user.email,
+            _id: user._id,
+          },
+          TOKEN_SECRET_KEY!,
+          { expiresIn }
+        );
+
+        res.cookie("token", token, {
+          maxAge: expiresIn,
+          path: "/",
+          secure: false,
+        });
+        res.status(200).json("OK");
+
+        return;
+      }
+      res.sendStatus(500);
     }
   );
 
-  app.get("/api/sessions/oauth/google", async (req, res) => {
-    try {
-      const code = req.query["code"] as string;
-      const { id_token, access_token } = await userService.getGoogleOAuthToken(
-        code
-      );
-      const user = await userService.getGoogleUser(id_token, access_token);
-
-      if (!user["verified_email"]) {
-        res.status(403).json("Email is not verified");
-      }
-
-      await userModel.create(user);
-      res.sendStatus(201);
-    } catch (err) {
-      res.json(err);
+  app.get(
+    "/profile",
+    passport.authenticate("jwt", { session: false }),
+    async (req, res) => {
+      return res.json(req.user);
     }
-  });
+  );
 
-  app.get("/users", async (req, res) => {
-    const result = await userModel.find();
-    res.json(result);
+  app.use((err: any, req: any, res: any, next: any) => {
+    res.json(err);
   });
 
   app.listen(PORT, () => {

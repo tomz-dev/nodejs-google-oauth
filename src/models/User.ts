@@ -19,5 +19,5 @@ userSchema.virtual("fullName").get(function () {
   return `${this.family_name} ${this.name}`;
 });
 
-const userModel = mongoose.model<mongoose.Document>("User", userSchema);
+const userModel = mongoose.model("User", userSchema);
 export default userModel;
